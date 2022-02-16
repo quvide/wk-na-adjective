@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WaniKani NA-adjective highlighter
 // @namespace    wk-na-adjective
-// @version      0.0.2
+// @version      0.0.3
 // @description  Displays な after the subject in lessons and reviews.
 // @author       Elias Benkhodja
 // @include      /^https://(www|preview).wanikani.com/(lesson|review)/session/
@@ -28,6 +28,11 @@
 
     // Check if the parts of speech include な
     const isNa = (subject) => {
+        // If it's not a vocab item there will be no parts_of_speech object
+        if (!subject.parts_of_speech) {
+            return false;
+        }
+
         const res = subject.parts_of_speech.map(a => a.includes("な")).reduce((a, b) => a || b);
         log(`Is な-adjective: ${res} (${subject.parts_of_speech})`);
         return res;
