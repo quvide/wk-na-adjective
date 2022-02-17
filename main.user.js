@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WaniKani NA-adjective highlighter
 // @namespace    wk-na-adjective
-// @version      0.0.3
+// @version      0.0.4
 // @description  Displays な after the subject in lessons and reviews.
 // @author       Elias Benkhodja
 // @include      /^https://(www|preview).wanikani.com/(lesson|review)/session/
@@ -10,12 +10,14 @@
 // ==/UserScript==
 
 (async function () {
-    'use strict';
+    "use strict";
 
     // From https://github.com/rfindley/wanikani-open-framework
     if (!window.wkof) {
-        alert('[WaniKani NA-adjective highlighter] script requires Wanikani Open Framework.\nYou will now be forwarded to installation instructions.');
-        window.location.href = 'https://community.wanikani.com/t/instructions-installing-wanikani-open-framework/28549';
+        alert(
+            "[WaniKani NA-adjective highlighter] script requires Wanikani Open Framework.\nYou will now be forwarded to installation instructions."
+        );
+        window.location.href = "https://community.wanikani.com/t/instructions-installing-wanikani-open-framework/28549";
         return;
     }
 
@@ -33,62 +35,97 @@
             return false;
         }
 
-        const res = subject.parts_of_speech.map(a => a.includes("な")).reduce((a, b) => a || b);
+        const res = subject.parts_of_speech.map((a) => a.includes("な")).reduce((a, b) => a || b);
         log(`Is な-adjective: ${res} (${subject.parts_of_speech})`);
         return res;
-    }
+    };
 
-    // Remove element we have added
+    // We have to use a custom tag because WK apparently replaces all span element contents...
+    const newNaElement = () => $(`<span-na id="${SPAN_ID}" style="opacity: 0.5">な</span-na>`);
+
+    // Add new element with な
+    const addIfNa = (subject, insertAction) => {
+        // I think the logic is easier to follow if we start from a clean state each time. This does cause some
+        // potential trouble with infinite mutations, but we handle that in another way.
+        clear();
+        if (isNa(subject)) {
+            insertAction(newNaElement());
+        }
+    };
+
+    // Remove element added by this userscript
     const clear = () => $(`#${SPAN_ID}`).remove();
 
-    // WaniKani uses React for the lessons page, and something else for reviews
-    if (isLessons) {
-        log("Lessions mode");
-
-        const subjectChangeCallback = (key, action) => {
-            // Remove synchronously, or otherwise we might get race conditions
-            clear();
-
-            const subject = $.jStorage.get(key);
-
-            if (subject && isNa(subject)) {
-                // Async or otherwise react overwrites our addition, because it does changes after us
-                setTimeout(() => {
-                    $(`<span id="${SPAN_ID}" style="opacity: 0.5">な</span>`).appendTo($("#character"));
-                }, 0);
+    const waitForElement = async (selector) => {
+        while (true) {
+            const el = $(selector);
+            if (el.length > 0) {
+                return el[0];
             }
-        }
 
-        // Listen for changes in jStorage as the base event
-        // TODO: maybe change this to use mutationobserver too?
-        $.jStorage.listenKeyChange("l/currentQuizItem", subjectChangeCallback);
-        $.jStorage.listenKeyChange("l/currentLesson", subjectChangeCallback);
+            await new Promise((res) => setTimeout(res, 100));
+        }
+    };
+
+    // WaniKani uses React for the lessons page, and something else for reviews so handle cases separately
+    if (isLessons) {
+        log("Lessons mode");
+
+        // On the lesson page the html is structured like this:
+        // <div id="character" lang="ja">...</div>
+        const subjectEl = await waitForElement("#character");
+
+        // We also need to observe mutations on the text node, because we would get an infinite loop of mutations if we
+        // tried to observe #character and we added stuff to it
+        const subjectElTextNode = Array.from($("#character")[0].childNodes).filter((n) => n.nodeType === 3)[0];
+
+        const mutCb = async (mutationList, observer) => {
+            // We don't need wkof here because WK loads the data in jStorage in lesson mode
+            const subject = $.jStorage.get("l/quizActive")
+                ? $.jStorage.get("l/currentQuizItem")
+                : $.jStorage.get("l/currentLesson");
+            addIfNa(subject, (naEl) => {
+                naEl.appendTo(subjectEl);
+            });
+        };
+
+        // Observe only characterData of the text node, since that is what will be changing
+        const observer = new MutationObserver(mutCb);
+        observer.observe(subjectElTextNode, { characterData: true });
+
+        // Call manually for the first time in case we missed the initial state
+        mutCb();
     } else {
         log("Reviews mode");
 
-        // This span contains the reviewed item
-        const el = $("#character > span")[0];
-
-        // Immediately invoke async function to fetch subject data
+        // Immediately invoke async function to fetch subject data from wkof
         const items = (async () => {
             wkof.include("ItemData");
             await wkof.ready("ItemData");
             return await wkof.ItemData.get_index(await wkof.ItemData.get_items(), "subject_id");
         })();
 
+        // On the review page the html is structured like this:
+        // <div id="character" class="vocabulary">
+        //     <span lang="ja">...</span>
+        // </div>
+        const subjectEl = await waitForElement("#character > span");
+
         const mutCb = async (mutationList, observer) => {
+            // Get item id directly from jStorage
             const current_id = $.jStorage.get("currentItem").id;
             const subject = (await items)[current_id].data;
-
-            clear();
-            if (isNa(subject)) {
-                // We have to use a custom tag because WK apparently replaces all span element contents...
-                $(`<span-na id="${SPAN_ID}" style="opacity: 0.5">な</span-na>`).appendTo($("#character"));
-            }
+            addIfNa(subject, (naEl) => {
+                // Insert after, not append to parent because we would end up with whitespace between the elements.
+                naEl.insertAfter(subjectEl);
+            });
         };
 
-        // Observe for changes in the element containing the reviewed item
+        // Observe for changes in the element containing the lesson item
         const observer = new MutationObserver(mutCb);
-        observer.observe(el, { childList: true });
+        observer.observe(subjectEl, { childList: true });
+
+        // Call manually for the first time in case we missed the initial state
+        mutCb();
     }
 })();
